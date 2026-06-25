@@ -1,6 +1,6 @@
 //! Command-line tool for exercising the WeAct display driver on real hardware.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use weact_display::{Framebuffer, Orientation, Rgb565, WeActDisplay};
 use weact_display_serial::{SerialTransport, find_ports_by_name};
@@ -132,14 +132,15 @@ fn fill(
     orientation: Orientation,
     brightness: Option<u8>,
 ) -> Result<()> {
-    if let Some(brightness) = brightness {
-        if brightness > 100 {
-            bail!("brightness must be between 0 and 100");
-        }
+    if let Some(brightness) = brightness
+        && brightness > 100
+    {
+        bail!("brightness must be between 0 and 100");
     }
 
     let port = resolve_port(port, name)?;
-    let transport = SerialTransport::open(&port)?;
+    let transport = SerialTransport::open(&port)
+        .with_context(|| format!("failed to open serial port {port}"))?;
     let mut display = WeActDisplay::new(transport, orientation);
     display.init()?;
 
