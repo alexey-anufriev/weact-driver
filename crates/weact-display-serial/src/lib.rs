@@ -9,8 +9,8 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use serialport::{FlowControl, SerialPort, SerialPortType};
-use weact_display::{Transport, TransportError};
+use serialport::{FlowControl, SerialPort, SerialPortType, UsbPortInfo};
+use weact_display::{DisplaySpec, SUPPORTED_SPECS, Transport, TransportError};
 
 /// Serial-port transport for the WeAct USB CDC device.
 pub struct SerialTransport {
@@ -49,18 +49,46 @@ impl Transport for SerialTransport {
     }
 }
 
-/// Finds serial ports whose USB product name contains `name`.
-pub fn find_ports_by_name(name: &str) -> serialport::Result<Vec<String>> {
-    let name = name.to_ascii_lowercase();
-    let ports = serialport::available_ports()?
+/// A serial port matched to a supported display spec.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DetectedPort {
+    /// Display spec inferred from USB metadata.
+    pub spec: &'static DisplaySpec,
+    /// Operating-system serial port path.
+    pub port_name: String,
+}
+
+/// Finds serial ports that match any supported display spec.
+pub fn find_display_ports() -> serialport::Result<Vec<DetectedPort>> {
+    Ok(serialport::available_ports()?
         .into_iter()
         .filter_map(|port| match port.port_type {
-            SerialPortType::UsbPort(info) => info
-                .product
-                .filter(|product| product.to_ascii_lowercase().contains(&name))
-                .map(|_| port.port_name),
+            SerialPortType::UsbPort(info) => Some((port.port_name, info)),
             _ => None,
         })
-        .collect();
-    Ok(ports)
+        .flat_map(|(port_name, info)| {
+            SUPPORTED_SPECS
+                .iter()
+                .copied()
+                .filter(move |spec| spec_matches_usb_info(spec, &info))
+                .map(move |spec| DetectedPort {
+                    spec,
+                    port_name: port_name.clone(),
+                })
+        })
+        .collect())
+}
+
+fn spec_matches_usb_info(spec: &DisplaySpec, info: &UsbPortInfo) -> bool {
+    let product_name_hint = spec.product_name_hint.to_ascii_lowercase();
+    let product_matches = info
+        .product
+        .as_ref()
+        .is_some_and(|product| product.to_ascii_lowercase().contains(&product_name_hint));
+    let serial_matches = info
+        .serial_number
+        .as_ref()
+        .is_some_and(|serial| serial.starts_with(spec.serial_prefix));
+
+    product_matches || serial_matches
 }

@@ -1,27 +1,31 @@
-use crate::protocol::Orientation;
+use crate::{DisplaySpec, Framebuffer, Orientation, Rgb565, Transport, protocol};
 use crate::{Error, Result};
-use crate::{Framebuffer, Rgb565, Transport, protocol};
 
-/// Driver for controlling the WeAct 0.96-inch display.
+/// Driver for controlling an official WeAct Display FS model.
 pub struct WeActDisplay<T: Transport> {
     transport: T,
+    spec: &'static DisplaySpec,
     width: u16,
     height: u16,
     orientation: Orientation,
 }
 
 impl<T: Transport> WeActDisplay<T> {
-    /// Creates a display using the 0.96-inch dimensions for `orientation`.
-    ///
-    /// This is the constructor most applications should use.
-    pub fn new(transport: T, orientation: Orientation) -> Self {
-        let (width, height) = orientation.dimensions();
+    /// Creates a display for a specific official model.
+    pub fn new(transport: T, spec: &'static DisplaySpec, orientation: Orientation) -> Self {
+        let (width, height) = orientation.dimensions(spec);
         Self {
             transport,
+            spec,
             width,
             height,
             orientation,
         }
+    }
+
+    /// Static model facts used by this display instance.
+    pub const fn spec(&self) -> &'static DisplaySpec {
+        self.spec
     }
 
     /// Current logical display width in pixels.
@@ -41,8 +45,7 @@ impl<T: Transport> WeActDisplay<T> {
 
     /// Performs the current minimal initialization sequence.
     ///
-    /// TODO: read firmware details here after transports support response bytes,
-    ///       then enable FastLZ when the device supports it.
+    /// TODO: read firmware details here after transports support response bytes.
     pub fn init(&mut self) -> Result<()> {
         self.set_orientation(self.orientation)?;
         Ok(())
@@ -63,7 +66,7 @@ impl<T: Transport> WeActDisplay<T> {
     /// The transport is flushed, so later drawing calls use the new orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) -> Result<()> {
         self.orientation = orientation;
-        let (width, height) = orientation.dimensions();
+        let (width, height) = orientation.dimensions(self.spec);
         self.width = width;
         self.height = height;
         self.transport
@@ -133,7 +136,7 @@ impl<T: Transport> WeActDisplay<T> {
         self.transport
             .write_all(&protocol::set_bitmap_header(0, 0, self.width, self.height))?;
 
-        // Larger displays may want row streaming to avoid building a full byte vector first.
+        // Larger official models may want row streaming to avoid building a full byte vector first.
         let bytes = framebuffer.as_rgb565_le_bytes();
         let chunk_size = self.width as usize * 4;
         for chunk in bytes.chunks(chunk_size) {
@@ -153,7 +156,9 @@ impl<T: Transport> WeActDisplay<T> {
 #[cfg(test)]
 mod tests {
     use super::{Orientation, WeActDisplay};
-    use crate::{Framebuffer, Rgb565, Transport, TransportError};
+    use crate::{
+        Framebuffer, Rgb565, Transport, TransportError, WEACT_FS_096_80X160, WEACT_FS_V1_320X480,
+    };
 
     #[derive(Default)]
     struct TestRecordingTransport {
@@ -176,8 +181,9 @@ mod tests {
     #[test]
     fn writes_uncompressed_full_framebuffer_in_official_chunks() {
         let transport = TestRecordingTransport::default();
-        let mut display = WeActDisplay::new(transport, Orientation::Landscape);
-        let mut fb = Framebuffer::new_landscape();
+        let mut display =
+            WeActDisplay::new(transport, &WEACT_FS_096_80X160, Orientation::Landscape);
+        let mut fb = Framebuffer::new_for_display(&WEACT_FS_096_80X160, Orientation::Landscape);
         fb.clear(Rgb565::RED);
 
         display.draw_framebuffer(&fb).unwrap();
@@ -196,7 +202,8 @@ mod tests {
     #[test]
     fn init_writes_orientation() {
         let transport = TestRecordingTransport::default();
-        let mut display = WeActDisplay::new(transport, Orientation::Landscape);
+        let mut display =
+            WeActDisplay::new(transport, &WEACT_FS_096_80X160, Orientation::Landscape);
         display.init().unwrap();
         let transport = display.transport();
         assert_eq!(transport.writes, vec![vec![0x02, 0x02, 0x0a]]);
@@ -204,9 +211,18 @@ mod tests {
     }
 
     #[test]
+    fn supports_v1_dimensions() {
+        let transport = TestRecordingTransport::default();
+        let display = WeActDisplay::new(transport, &WEACT_FS_V1_320X480, Orientation::Landscape);
+        assert_eq!(display.spec(), &WEACT_FS_V1_320X480);
+        assert_eq!((display.width(), display.height()), (480, 320));
+    }
+
+    #[test]
     fn fills_rectangles() {
         let transport = TestRecordingTransport::default();
-        let mut display = WeActDisplay::new(transport, Orientation::Landscape);
+        let mut display =
+            WeActDisplay::new(transport, &WEACT_FS_096_80X160, Orientation::Landscape);
         display.fill_rect(5, 2, 10, 10, Rgb565::BLUE).unwrap();
         let transport = display.transport();
         assert_eq!(

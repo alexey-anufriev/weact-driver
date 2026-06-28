@@ -3,13 +3,8 @@
 //! Each function returns the exact byte sequence expected by the display,
 //! which keeps protocol details easy to test without hardware.
 
+use crate::Orientation;
 use crate::Rgb565;
-
-/// Native portrait width of the 0.96-inch device.
-pub const NATIVE_WIDTH: u16 = 80;
-
-/// Native portrait height of the 0.96-inch device.
-pub const NATIVE_HEIGHT: u16 = 160;
 
 /// Changes orientation.
 pub const CMD_SET_ORIENTATION: u8 = 0x02;
@@ -23,11 +18,6 @@ pub const CMD_FULL: u8 = 0x04;
 /// Uploads an uncompressed bitmap.
 pub const CMD_SET_BITMAP: u8 = 0x05;
 
-/// Uploads a FastLZ-compressed bitmap.
-/// TODO: use this after the transport can read firmware capability responses
-///       and the driver can encode FastLZ chunks.
-pub const CMD_SET_BITMAP_WITH_FASTLZ: u8 = 0x15;
-
 /// Tells the device the host is done using the display.
 pub const CMD_FREE: u8 = 0x07;
 
@@ -40,48 +30,7 @@ pub const CMD_READ: u8 = 0x80;
 /// End marker appended to command headers.
 pub const CMD_END: u8 = 0x0a;
 
-/// Display orientation values understood by the firmware.
-///
-/// The 0.96-inch panel is natively `80x160`;
-/// landscape orientations expose it as `160x80`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Orientation {
-    /// Native portrait orientation, protocol value `0`.
-    Portrait,
-
-    /// Portrait rotated 180 degrees, protocol value `1`.
-    PortraitFlipped,
-
-    /// Landscape orientation, protocol value `2`.
-    Landscape,
-
-    /// Landscape rotated 180 degrees, protocol value `3`.
-    LandscapeFlipped,
-}
-
-impl Orientation {
-    /// Numeric value sent in the orientation command.
-    pub const fn protocol_value(self) -> u8 {
-        match self {
-            Self::Portrait => 0,
-            Self::PortraitFlipped => 1,
-            Self::Landscape => 2,
-            Self::LandscapeFlipped => 3,
-        }
-    }
-
-    /// Logical width and height for this orientation.
-    pub const fn dimensions(self) -> (u16, u16) {
-        match self {
-            Self::Portrait | Self::PortraitFlipped => (NATIVE_WIDTH, NATIVE_HEIGHT),
-            Self::Landscape | Self::LandscapeFlipped => (NATIVE_HEIGHT, NATIVE_WIDTH),
-        }
-    }
-}
-
 /// Asks the device for its firmware version.
-///
-/// The host app uses the response to check FastLZ support.
 ///
 /// TODO: call this during initialization after [`crate::Transport`] supports
 ///       reading response bytes.

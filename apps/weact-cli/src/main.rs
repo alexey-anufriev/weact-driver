@@ -2,12 +2,10 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use weact_display::{Framebuffer, Orientation, Rgb565, WeActDisplay};
-use weact_display_serial::{SerialTransport, find_ports_by_name};
+use weact_display::{DisplaySpec, Framebuffer, Orientation, Rgb565, WeActDisplay};
+use weact_display_serial::{DetectedPort, SerialTransport, find_display_ports};
 
-/// Parsed command-line arguments.
-///
-/// Clap derives the parser from this struct and the nested enums below.
+/// Test CLI for official WeAct Display FS models.
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Args {
@@ -19,22 +17,14 @@ struct Args {
 /// CLI subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Find serial ports by USB product name.
-    FindPort {
-        /// USB product name to search for.
-        #[arg(long, default_value = "Display FS 0.96 Inch")]
-        name: String,
-    },
+    /// Find serial ports for supported display models.
+    FindPort,
 
     /// Fill the display with one named color.
     Fill {
         /// Serial device path, such as `/dev/ttyACM0` on Linux.
         #[arg(long)]
         port: Option<String>,
-
-        /// USB product name to use when `--port` is omitted.
-        #[arg(long, default_value = "Display FS 0.96 Inch")]
-        name: String,
 
         /// Color to draw.
         #[arg(long, value_enum, default_value_t = NamedColor::Red)]
@@ -100,34 +90,36 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::FindPort { name } => find_port(&name),
+        Command::FindPort => find_port(),
         Command::Fill {
             port,
-            name,
             color,
             orientation,
             brightness,
-        } => fill(port, &name, color, orientation.into(), brightness),
+        } => fill(port, color, orientation.into(), brightness),
     }
 }
 
 /// Runs the `find-port` subcommand.
-fn find_port(name: &str) -> Result<()> {
-    let ports = find_ports_by_name(name)?;
+fn find_port() -> Result<()> {
+    let ports = find_display_ports()?;
     if ports.is_empty() {
-        bail!("no serial ports found with USB product name containing `{name}`");
+        bail!("no supported WeAct Display FS serial ports found");
     }
 
-    for port in ports {
-        println!("{port}");
+    for detected in ports {
+        println!(
+            "{}\t{}\t{}",
+            detected.spec.revision, detected.spec.name, detected.port_name
+        );
     }
+
     Ok(())
 }
 
 /// Runs the `fill` subcommand.
 fn fill(
     port: Option<String>,
-    name: &str,
     color: NamedColor,
     orientation: Orientation,
     brightness: Option<u8>,
@@ -138,37 +130,72 @@ fn fill(
         bail!("brightness must be between 0 and 100");
     }
 
-    let port = resolve_port(port, name)?;
+    let detected = resolve_display(port)?;
+    let spec = detected.spec;
+    let port = detected.port_name;
     let transport = SerialTransport::open(&port)
         .with_context(|| format!("failed to open serial port {port}"))?;
-    let mut display = WeActDisplay::new(transport, orientation);
+    let mut display = WeActDisplay::new(transport, spec, orientation);
     display.init()?;
 
     if let Some(brightness) = brightness {
         display.set_brightness(brightness)?;
     }
 
-    let mut framebuffer = match orientation {
-        Orientation::Portrait | Orientation::PortraitFlipped => Framebuffer::new_portrait(),
-        Orientation::Landscape | Orientation::LandscapeFlipped => Framebuffer::new_landscape(),
-    };
+    let mut framebuffer = Framebuffer::new_for_display(spec, orientation);
     framebuffer.clear(color.rgb565());
     display.draw_framebuffer(&framebuffer)?;
     Ok(())
 }
 
-fn resolve_port(port: Option<String>, name: &str) -> Result<String> {
-    if let Some(port) = port {
-        return Ok(port);
-    }
+fn resolve_display(port: Option<String>) -> Result<DetectedPort> {
+    let detected_ports = find_display_ports()?;
 
-    let ports = find_ports_by_name(name)?;
-    match ports.as_slice() {
-        [] => bail!("no serial ports found with USB product name containing `{name}`"),
-        [port] => Ok(port.clone()),
+    match port {
+        Some(port) => resolve_explicit_display_port(&detected_ports, &port),
+        None => resolve_single_detected_display(&detected_ports),
+    }
+}
+
+fn resolve_single_detected_display(detected_ports: &[DetectedPort]) -> Result<DetectedPort> {
+    match detected_ports {
+        [] => bail!("no supported WeAct Display FS serial ports found"),
+        [detected] => Ok(detected.clone()),
         _ => bail!(
-            "multiple serial ports found for `{name}`: {}. Pass one explicitly with --port",
-            ports.join(", ")
+            "multiple supported WeAct Display FS serial ports found: {}. Pass one explicitly with --port",
+            format_detected_ports(detected_ports)
         ),
     }
+}
+
+fn resolve_explicit_display_port(
+    detected_ports: &[DetectedPort],
+    port: &str,
+) -> Result<DetectedPort> {
+    let matches: Vec<_> = detected_ports
+        .iter()
+        .filter(|detected| detected.port_name == port)
+        .cloned()
+        .collect();
+
+    match matches.as_slice() {
+        [] => bail!("serial port {port} was not recognized as a supported WeAct Display FS device"),
+        [detected] => Ok(detected.clone()),
+        _ => bail!(
+            "serial port {port} matched multiple display specs: {}",
+            format_detected_ports(&matches)
+        ),
+    }
+}
+
+fn format_detected_ports(ports: &[DetectedPort]) -> String {
+    ports
+        .iter()
+        .map(|detected| format_detected_port(detected.spec, &detected.port_name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_detected_port(spec: &DisplaySpec, port_name: &str) -> String {
+    format!("{} {} on {}", spec.revision, spec.name, port_name)
 }
